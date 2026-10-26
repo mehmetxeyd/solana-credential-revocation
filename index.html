@@ -138,7 +138,7 @@ function say(msg, kind) {
 function html(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function phantom() {
+function getProvider() {
   const p = (window.phantom && window.phantom.solana) || window.solana;
   if (!p || !p.isPhantom) throw new Error("Phantom wallet not found. Install the Phantom extension and reload this page.");
   return p;
@@ -177,7 +177,7 @@ function openTab(name) { document.querySelector(`nav button[data-tab="${name}"]`
 
 /* ---------- wallet ---------- */
 $("connectBtn").addEventListener("click", () => busy($("connectBtn"), async () => {
-  const r = await phantom().connect();
+  const r = await getProvider().connect();
   wallet = new solanaWeb3.PublicKey(r.publicKey.toString());
   const a = wallet.toBase58();
   $("walletLabel").textContent = a.slice(0, 4) + "…" + a.slice(-4);
@@ -203,7 +203,7 @@ $("issueBtn").addEventListener("click", () => busy($("issueBtn"), async () => {
   };
   const payload = JSON.stringify(cred);
   say("Approve the signature request in Phantom…");
-  const { signature } = await phantom().signMessage(enc.encode(payload), "utf8");
+  const { signature } = await getProvider().signMessage(enc.encode(payload), "utf8");
   const pkg = { payload, signature: b64(signature) };
   const text = JSON.stringify(pkg, null, 2);
   $("issued").value = text;
@@ -280,7 +280,7 @@ $("revokeBtn").addEventListener("click", () => busy($("revokeBtn"), async () => 
   tx.recentBlockhash = blockhash;
 
   say("Approve the transaction in Phantom…");
-  const signed = await phantom().signTransaction(tx);
+  const signed = await getProvider().signTransaction(tx);
   say("Sending to devnet…");
   const sig = await conn.sendRawTransaction(signed.serialize());
   await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
