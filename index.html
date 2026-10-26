@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Credential revocation on Solana</title>
+<script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.98.0/lib/index.iife.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl.min.js"></script>
+<style>
+  :root{
+    --paper:#F6F7F9; --card:#FFFFFF; --ink:#14213D; --muted:#5B6578; --line:#D5DAE3;
+    --seal:#1F7A5A; --seal-bg:#E5F3EC; --void:#B3261E; --void-bg:#FBE9E7; --accent:#2B4C9B;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#0F1522; --card:#171F31; --ink:#E8ECF4; --muted:#98A2B6; --line:#2A3550;
+      --seal:#5CCB9D; --seal-bg:#12301F; --void:#FF8A80; --void-bg:#3A1816; --accent:#8FB0FF;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+  .wrap{max-width:820px;margin:0 auto;padding:28px 20px 60px}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+  h1{font:600 30px/1.2 Georgia,"Iowan Old Style",serif;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0;max-width:52ch}
+  button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:9px 14px}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  @media (prefers-color-scheme: dark){button.primary{color:#0F1522}}
+  button:disabled{opacity:.55;cursor:wait}
+  button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .wallet{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--muted)}
+  nav{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:22px}
+  nav button{border:none;border-bottom:3px solid transparent;border-radius:0;background:none;padding:10px 14px;color:var(--muted)}
+  nav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+  section.panel{display:none}
+  section.panel.on{display:block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+  label{display:block;font-weight:600;font-size:14px;margin:14px 0 6px}
+  input,textarea{width:100%;font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px}
+  textarea{min-height:150px;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;resize:vertical}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+  .hint{color:var(--muted);font-size:14px;margin:6px 0 0}
+  #status{margin-top:18px;min-height:24px;font-size:14px}
+  #status.err{color:var(--void)}
+  #status.ok{color:var(--seal)}
+  .stamp{display:inline-block;margin:6px 0 14px;padding:6px 18px;border:3px solid;border-radius:8px;font:700 26px/1.2 Georgia,serif;transform:rotate(-2deg)}
+  .stamp.valid{color:var(--seal);border-color:var(--seal);background:var(--seal-bg)}
+  .stamp.revoked,.stamp.invalid{color:var(--void);border-color:var(--void);background:var(--void-bg)}
+  dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0;font-size:14px}
+  dt{color:var(--muted)}
+  dd{margin:0;word-break:break-all}
+  a{color:var(--accent)}
+  footer{margin-top:34px;color:var(--muted);font-size:13px}
+  code{font:13px ui-monospace,Menlo,Consolas,monospace}
+  @media (prefers-reduced-motion: no-preference){ .stamp{transition:transform .2s} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Credential revocation on Solana</h1>
+      <p class="sub">Issue a signed credential, then revoke it on-chain. Anyone can check its status without a wallet and without trusting a server.</p>
+    </div>
+    <div class="wallet">
+      <span id="walletLabel">Wallet not connected</span>
+      <button class="primary" id="connectBtn">Connect Phantom</button>
+    </div>
+  </header>
+
+  <nav role="tablist" aria-label="Actions">
+    <button role="tab" aria-selected="true" data-tab="issue">Issue</button>
+    <button role="tab" aria-selected="false" data-tab="verify">Verify</button>
+    <button role="tab" aria-selected="false" data-tab="revoke">Revoke</button>
+  </nav>
+
+  <section class="panel on" id="tab-issue">
+    <div class="card">
+      <label for="subject">Credential holder</label>
+      <input id="subject" value="Alex Example">
+      <label for="title">Credential</label>
+      <input id="title" value="Certificate: Introduction to PKI">
+      <div class="row"><button class="primary" id="issueBtn">Sign credential</button></div>
+      <p class="hint">Your connected wallet becomes the issuer. Signing happens in Phantom and costs nothing.</p>
+      <label for="issued">Signed credential (share this with the holder)</label>
+      <textarea id="issued" readonly placeholder="The signed credential appears here."></textarea>
+      <div class="row"><button id="copyBtn">Copy</button><button id="toVerify">Check it in Verify</button></div>
+    </div>
+  </section>
+
+  <section class="panel" id="tab-verify">
+    <div class="card">
+      <label for="verifyInput">Signed credential</label>
+      <textarea id="verifyInput" placeholder="Paste a signed credential here."></textarea>
+      <div class="row"><button class="primary" id="verifyBtn">Check credential</button></div>
+      <p class="hint">No wallet needed. This checks the issuer’s signature and then looks for a revocation record on Solana devnet.</p>
+      <div id="verifyResult" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="tab-revoke">
+    <div class="card">
+      <label for="revokeInput">Signed credential to revoke</label>
+      <textarea id="revokeInput" placeholder="Paste the signed credential here."></textarea>
+      <div class="row"><button class="primary" id="revokeBtn">Revoke on Solana</button></div>
+      <p class="hint">Only the issuer’s wallet can revoke. This sends one devnet transaction, which needs a small amount of devnet SOL.</p>
+    </div>
+  </section>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <footer>
+    Program <code id="programLabel"></code> on devnet.
+    Revocation records are PDAs derived from the issuer and the SHA-256 hash of the credential.
+  </footer>
+</div>
+
+<script>
+const PROGRAM_ID = new solanaWeb3.PublicKey("HNGzq89ne642qkLDCszQ56Y6PKGgBSRTpmPHG3JRYcdX");
+const conn = new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed");
+const enc = new TextEncoder();
+const $ = (id) => document.getElementById(id);
+let wallet = null;
+
+$("programLabel").textContent = PROGRAM_ID.toBase58();
+
+/* ---------- helpers ---------- */
+const b64 = (bytes) => { let s = ""; bytes.forEach((b) => (s += String.fromCharCode(b))); return btoa(s); };
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const hex = (b) => Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+const sha256 = async (bytes) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+
+function say(msg, kind) {
+  const el = $("status");
+  el.textContent = msg || "";
+  el.className = kind || "";
+}
+function html(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function phantom() {
+  const p = (window.phantom && window.phantom.solana) || window.solana;
+  if (!p || !p.isPhantom) throw new Error("Phantom wallet not found. Install the Phantom extension and reload this page.");
+  return p;
+}
+async function busy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); }
+  catch (e) { console.error(e); say(e.message || String(e), "err"); }
+  finally { btn.disabled = false; }
+}
+function parsePackage(text) {
+  let pkg;
+  try { pkg = JSON.parse(text); } catch { throw new Error("That is not a valid signed credential. Paste the full text."); }
+  if (!pkg || !pkg.payload || !pkg.signature) throw new Error("This is missing the payload or signature.");
+  let cred;
+  try { cred = JSON.parse(pkg.payload); } catch { throw new Error("The credential payload is damaged."); }
+  let issuer;
+  try { issuer = new solanaWeb3.PublicKey(cred.issuer); } catch { throw new Error("The issuer address in the credential is invalid."); }
+  return { pkg, cred, issuer };
+}
+function recordPda(issuer, hash) {
+  return solanaWeb3.PublicKey.findProgramAddressSync(
+    [enc.encode("revoked"), issuer.toBytes(), hash], PROGRAM_ID
+  )[0];
+}
+
+/* ---------- tabs ---------- */
+document.querySelectorAll("nav button").forEach((b) =>
+  b.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((x) => x.setAttribute("aria-selected", x === b));
+    document.querySelectorAll("section.panel").forEach((s) => s.classList.toggle("on", s.id === "tab-" + b.dataset.tab));
+    say("");
+  })
+);
+function openTab(name) { document.querySelector(`nav button[data-tab="${name}"]`).click(); }
+
+/* ---------- wallet ---------- */
+$("connectBtn").addEventListener("click", () => busy($("connectBtn"), async () => {
+  const r = await phantom().connect();
+  wallet = new solanaWeb3.PublicKey(r.publicKey.toString());
+  const a = wallet.toBase58();
+  $("walletLabel").textContent = a.slice(0, 4) + "…" + a.slice(-4);
+  $("connectBtn").textContent = "Connected";
+  say("Wallet connected. Make sure Phantom is in devnet (testnet) mode.", "ok");
+}));
+function needWallet() {
+  if (!wallet) throw new Error("Connect your Phantom wallet first.");
+}
+
+/* ---------- issue ---------- */
+$("issueBtn").addEventListener("click", () => busy($("issueBtn"), async () => {
+  needWallet();
+  const subject = $("subject").value.trim();
+  const title = $("title").value.trim();
+  if (!subject || !title) throw new Error("Fill in the holder and the credential.");
+  const cred = {
+    id: crypto.randomUUID(),
+    issuer: wallet.toBase58(),
+    subject,
+    title,
+    issuedAt: new Date().toISOString(),
+  };
+  const payload = JSON.stringify(cred);
+  say("Approve the signature request in Phantom…");
+  const { signature } = await phantom().signMessage(enc.encode(payload), "utf8");
+  const pkg = { payload, signature: b64(signature) };
+  const text = JSON.stringify(pkg, null, 2);
+  $("issued").value = text;
+  $("verifyInput").value = text;
+  $("revokeInput").value = text;
+  say("Credential signed. It is also filled into the Verify and Revoke tabs.", "ok");
+}));
+$("copyBtn").addEventListener("click", async () => {
+  if (!$("issued").value) return say("Nothing to copy yet. Sign a credential first.", "err");
+  await navigator.clipboard.writeText($("issued").value);
+  say("Copied.", "ok");
+});
+$("toVerify").addEventListener("click", () => openTab("verify"));
+
+/* ---------- verify ---------- */
+$("verifyBtn").addEventListener("click", () => busy($("verifyBtn"), async () => {
+  say("Checking…");
+  $("verifyResult").innerHTML = "";
+  const { pkg, cred, issuer } = parsePackage($("verifyInput").value);
+  const sigOk = nacl.sign.detached.verify(enc.encode(pkg.payload), unb64(pkg.signature), issuer.toBytes());
+  const hash = await sha256(enc.encode(pkg.payload));
+  const pda = recordPda(issuer, hash);
+  const info = await conn.getAccountInfo(pda);
+
+  let kind = "valid", label = "Valid", note = "The signature is genuine and no revocation record exists.";
+  let revokedAt = "";
+  if (!sigOk) { kind = "invalid"; label = "Invalid"; note = "The signature does not match the issuer. This credential was altered or forged."; }
+  else if (info) {
+    kind = "revoked"; label = "Revoked"; note = "The issuer has revoked this credential on Solana.";
+    const dv = new DataView(info.data.buffer, info.data.byteOffset, info.data.byteLength);
+    revokedAt = new Date(Number(dv.getBigInt64(72, true)) * 1000).toLocaleString();
+  }
+  $("verifyResult").innerHTML = `
+    <div class="stamp ${kind}">${label}</div>
+    <p>${html(note)}</p>
+    <dl>
+      <dt>Holder</dt><dd>${html(cred.subject)}</dd>
+      <dt>Credential</dt><dd>${html(cred.title)}</dd>
+      <dt>Issued</dt><dd>${html(cred.issuedAt)}</dd>
+      <dt>Issuer</dt><dd>${html(cred.issuer)}</dd>
+      <dt>Signature</dt><dd>${sigOk ? "Valid" : "Does not match"}</dd>
+      <dt>Credential hash</dt><dd>${hex(hash)}</dd>
+      <dt>Revocation record</dt><dd><a href="https://explorer.solana.com/address/${pda.toBase58()}?cluster=devnet" target="_blank" rel="noreferrer">${pda.toBase58()}</a> ${info ? "(exists)" : "(none)"}</dd>
+      ${revokedAt ? `<dt>Revoked at</dt><dd>${html(revokedAt)}</dd>` : ""}
+    </dl>`;
+  say("");
+}));
+
+/* ---------- revoke ---------- */
+$("revokeBtn").addEventListener("click", () => busy($("revokeBtn"), async () => {
+  needWallet();
+  const { pkg, issuer } = parsePackage($("revokeInput").value);
+  if (!issuer.equals(wallet)) throw new Error("Only the issuer can revoke. Connect the wallet that issued this credential.");
+  const hash = await sha256(enc.encode(pkg.payload));
+  const pda = recordPda(issuer, hash);
+  if (await conn.getAccountInfo(pda)) throw new Error("This credential is already revoked.");
+
+  const disc = (await sha256(enc.encode("global:revoke"))).slice(0, 8);
+  const data = new Uint8Array(40);
+  data.set(disc, 0);
+  data.set(hash, 8);
+  const ix = new solanaWeb3.TransactionInstruction({
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: pda, isSigner: false, isWritable: true },
+      { pubkey: wallet, isSigner: true, isWritable: true },
+      { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+  const tx = new solanaWeb3.Transaction().add(ix);
+  tx.feePayer = wallet;
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+  tx.recentBlockhash = blockhash;
+
+  say("Approve the transaction in Phantom…");
+  const signed = await phantom().signTransaction(tx);
+  say("Sending to devnet…");
+  const sig = await conn.sendRawTransaction(signed.serialize());
+  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  $("status").className = "ok";
+  $("status").innerHTML = `Revoked. <a href="https://explorer.solana.com/tx/${sig}?cluster=devnet" target="_blank" rel="noreferrer">View the transaction</a>. Now check the credential in the Verify tab.`;
+  $("verifyInput").value = $("revokeInput").value;
+}));
+</script>
+</body>
+</html>
